@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 
 from ..policy import Provider
-from . import Result
+from . import Result, auth
 
 STOP = {"stop": "end_turn", "length": "max_tokens", "tool_calls": "tool_use", "content_filter": "refusal"}
 
@@ -116,7 +116,7 @@ class OpenAIAdapter:
         res = await self.client.post(
             f"{self.provider.base_url}/v1/chat/completions",
             json=to_openai(body),
-            headers={"authorization": f"Bearer {self.provider.api_key()}"},
+            headers=auth(self.provider),
             timeout=600,
         )
         data = res.json()

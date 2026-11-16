@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from ..policy import Provider
 
 
 @dataclass
@@ -22,3 +25,9 @@ class Adapter(Protocol):
     ) -> AsyncIterator[bytes]:
         """Server-sent events, passed through; fills `usage` as events arrive."""
         ...
+
+
+def auth(provider: Provider) -> dict[str, str]:
+    """A bearer key for OpenAI-style providers; none for a self-hosted model that takes no key."""
+    key = provider.api_key()
+    return {"authorization": f"Bearer {key}"} if key else {}
