@@ -40,7 +40,7 @@ def cost_usd(policy: Policy, model: str, usage: dict[str, Any]) -> float:
         + tokens["output_tokens"] * price.output
         + tokens["cache_creation_input_tokens"] * cache_write
         + tokens["cache_read_input_tokens"] * cache_read
-    ) / 1_000_000
+    ) / 1_000_000 + price.per_request
 
 
 class Ledger:

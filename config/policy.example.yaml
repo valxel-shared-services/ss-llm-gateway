@@ -9,6 +9,14 @@ providers:
     api_key_env: ANTHROPIC_API_KEY
     baa: true                # a BAA covers this account; required for phi
     models: ["claude-*"]
+  # Embeddings and reranking for knowledge components. For PHI: a self-hosted model (data stays
+  # in the product) or a provider under a BAA. Decided at G4 and written in the HLD.
+  embeddings:
+    type: openai             # OpenAI-compatible: vLLM, Hugging Face TEI
+    base_url: http://embeddings.emr.svc.cluster.local:8000
+    self_hosted: true        # no api_key_env: the model takes no key inside the product
+    models: ["bge-*"]
+    operations: [embeddings, rerank]
   # openai:
   #   type: openai
   #   base_url: https://api.openai.com
@@ -29,9 +37,16 @@ callers:
     budget_usd_per_day: 50
     models: ["claude-sonnet-*", "claude-haiku-*"]
     max_tokens: 8192
+  notes-knowledge:
+    key_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    budget_usd_per_day: 20
+    models: ["bge-*"]
+    max_inputs: 256          # texts per embeddings call, documents per rerank call
 
 # US dollars per million tokens. Cache writes default to 1.25 x input, cache reads to 0.1 x input.
 pricing:
   "claude-opus-*":   { input: 15.0, output: 75.0 }
   "claude-sonnet-*": { input: 3.0,  output: 15.0 }
   "claude-haiku-*":  { input: 1.0,  output: 5.0 }
+  "bge-*":           { input: 0.0 }                    # self-hosted: the cluster's cost, not per token
+  # "rerank-*":      { input: 0.05, per_request: 0.002 }  # a hosted reranker priced per search

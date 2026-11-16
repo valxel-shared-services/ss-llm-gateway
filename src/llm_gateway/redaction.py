@@ -94,3 +94,26 @@ def scrub_request(body: dict[str, Any], detectors: list[str]) -> tuple[dict[str,
         out["system"] = walk(out["system"])
     out["messages"] = [walk(m) for m in body.get("messages", [])]
     return out, findings
+
+
+def scrub_fields(
+    body: dict[str, Any], fields: tuple[str, ...], detectors: list[str]
+) -> tuple[dict[str, Any], Findings]:
+    """Apply detectors to the named fields of an embeddings or rerank request: a string, a list of
+    strings, or a list of {"text": ...} documents."""
+    findings = Findings()
+
+    def walk(value: Any) -> Any:
+        if isinstance(value, str):
+            return scrub(value, detectors, findings)
+        if isinstance(value, list):
+            return [walk(v) for v in value]
+        if isinstance(value, dict):
+            return {k: (walk(v) if k == "text" else v) for k, v in value.items()}
+        return value
+
+    out = dict(body)
+    for f in fields:
+        if f in out:
+            out[f] = walk(out[f])
+    return out, findings
