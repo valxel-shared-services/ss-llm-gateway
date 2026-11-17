@@ -1,1 +1,1 @@
-"""Vrixel shared LLM gateway."""
+"""Valxel shared LLM gateway."""

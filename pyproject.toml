@@ -1,7 +1,7 @@
 [project]
 name = "llm-gateway"
 version = "0.1.0"
-description = "Vrixel shared LLM gateway: Anthropic Messages API in front of approved model providers, with data-class policy, redaction, budgets and a usage ledger."
+description = "Valxel shared LLM gateway: Anthropic Messages API in front of approved model providers, with data-class policy, redaction, budgets and a usage ledger."
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.162,<1",

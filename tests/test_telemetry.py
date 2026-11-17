@@ -74,6 +74,6 @@ def test_each_model_call_is_a_genai_span_without_content(make_client) -> None:
     got = [s for s in exporter.get_finished_spans() if s.name == "POST /v1/messages"][-1].attributes
     assert got["gen_ai.operation.name"] == "chat" and got["gen_ai.request.model"] == "claude-sonnet-5-5"
     assert got["gen_ai.usage.input_tokens"] == 100 and got["gen_ai.usage.cache_read_input_tokens"] == 80
-    assert got["vrixel.variant"] == "concise" and got["vrixel.cost_usd"] == 0.0012
-    assert "vrixel.secret" not in got and not any("prompt" in k or "completion" in k for k in got)
+    assert got["valxel.variant"] == "concise" and got["valxel.cost_usd"] == 0.0012
+    assert "valxel.secret" not in got and not any("prompt" in k or "completion" in k for k in got)
     assert TracerProvider  # the SDK the gateway's telemetry installs
