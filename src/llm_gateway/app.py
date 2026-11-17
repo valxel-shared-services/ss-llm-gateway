@@ -125,11 +125,11 @@ def annotate(
     ):
         if usage.get(key) is not None:
             span.set_attribute(attr, int(usage.get(key) or 0))
-    span.set_attribute("vrixel.cost_usd", round(float(cost), 6))
-    span.set_attribute("vrixel.caller", caller)
+    span.set_attribute("valxel.cost_usd", round(float(cost), 6))
+    span.set_attribute("valxel.caller", caller)
     for k, v in labels.items():
         if k in SPAN_LABELS:
-            span.set_attribute(f"vrixel.{k}", str(v)[:200])
+            span.set_attribute(f"valxel.{k}", str(v)[:200])
 
 
 def check_texts(body: dict[str, Any], operation: str, max_inputs: int) -> str:
@@ -171,7 +171,7 @@ def create_app(
         yield
         await state["client"].aclose()
 
-    app = FastAPI(title="Vrixel LLM gateway", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title="Valxel LLM gateway", lifespan=lifespan, docs_url=None, redoc_url=None)
     telemetry.setup("llm-gateway", app=app)
 
     def audited(caller: str, model: str, outcome: Outcome, reason: str = "", **details: Any) -> None:
