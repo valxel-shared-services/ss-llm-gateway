@@ -42,6 +42,13 @@ callers:
     budget_usd_per_day: 20
     models: ["bge-*"]
     max_inputs: 256          # texts per embeddings call, documents per rerank call
+  # An orchestrator that mints a short-lived token per agent session (README: Session tokens).
+  # sdlc-tool:
+  #   key_sha256: "..."
+  #   budget_usd_per_day: 200
+  #   models: ["claude-*"]
+  #   max_tokens: 64000
+  #   sessions: { max_budget_usd: 20, max_ttl_s: 7200, max_open: 50 }
 
 # US dollars per million tokens. Cache writes default to 1.25 x input, cache reads to 0.1 x input.
 pricing:

@@ -2,6 +2,9 @@
 gateway key as the API key; nothing else changes in agent code.
 
   POST /v1/messages     Anthropic Messages API (streaming included for Anthropic providers)
+  POST /v1/messages/count_tokens   Anthropic token counting (Anthropic providers)
+  POST /v1/sessions     mint a session token (callers with a `sessions` grant; sessions.py)
+  GET  /v1/sessions/{id}, DELETE /v1/sessions/{id}   read or revoke one, with what it spent
   POST /v1/embeddings   OpenAI-style embeddings, for knowledge components
   POST /v1/rerank       Cohere-style reranking, for knowledge components
   GET  /healthz         liveness;  GET /readyz  readiness (policy loaded, provider keys present)
@@ -47,6 +50,7 @@ from .providers import Adapter, Result, retrieval
 from .providers.anthropic import AnthropicAdapter
 from .providers.openai import OpenAIAdapter
 from .redaction import Findings, scrub_fields, scrub_request
+from .sessions import TOKEN_PREFIX, Session, SessionRefused, SessionStore
 
 # Callers label requests with x-valxel-* headers (x-vrixel-* from before the rename still works).
 LABEL_PREFIXES = ("x-valxel-", "x-vrixel-")
@@ -96,6 +100,7 @@ class Admitted:
     labels: dict[str, str]
     request_id: str
     redacted: dict[str, int] = field(default_factory=dict)
+    session_id: str = ""
 
 
 def annotate(
@@ -168,15 +173,23 @@ def create_app(
         state["client"] = httpx.AsyncClient(transport=transport)
         state["ledger"] = Ledger(state["policy"])
         state["audit"] = auditor or make_auditor(state["policy"])
+        state["sessions"] = SessionStore()
         yield
         await state["client"].aclose()
 
     app = FastAPI(title="Valxel LLM gateway", lifespan=lifespan, docs_url=None, redoc_url=None)
     telemetry.setup("llm-gateway", app=app)
 
-    def audited(caller: str, model: str, outcome: Outcome, reason: str = "", **details: Any) -> None:
+    def audited(
+        caller: str,
+        model: str,
+        outcome: Outcome,
+        reason: str = "",
+        action: str = "llm.request",
+        **details: Any,
+    ) -> None:
         state["audit"].record(
-            "llm.request",
+            action,
             actor=Actor(id=caller, type="agent" if caller != "unknown" else "service"),
             resource=("model", [model] if model else []),
             outcome=outcome,
@@ -205,6 +218,24 @@ def create_app(
     def metrics() -> Response:
         return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
+    def key_of(request: Request) -> str:
+        return request.headers.get("x-api-key") or request.headers.get("authorization", "").removeprefix(
+            "Bearer "
+        )
+
+    def caller_of(request: Request) -> tuple[str, Caller, Session | None] | None:
+        """Who is calling: a caller by its own key, or by a live session token minted for it."""
+        pol: Policy = state["policy"]
+        key = key_of(request)
+        if not key:
+            return None
+        if key.startswith(TOKEN_PREFIX):
+            sess = state["sessions"].find(key)
+            caller = pol.callers.get(sess.caller) if sess is not None else None
+            return (sess.caller, caller, sess) if sess is not None and caller is not None else None
+        found = pol.caller_for(key)
+        return (found[0], found[1], None) if found else None
+
     async def admit(
         request: Request, operation: Operation, texts: tuple[str, ...] = ()
     ) -> Admitted | Response:
@@ -212,16 +243,15 @@ def create_app(
         send, or the refusal to return. `texts` are the fields that embeddings and rerank send."""
         pol: Policy = state["policy"]
         ledger: Ledger = state["ledger"]
-        key = request.headers.get("x-api-key") or request.headers.get("authorization", "").removeprefix(
-            "Bearer "
-        )
-        found = pol.caller_for(key) if key else None
+        found = caller_of(request)
         if found is None:
             REQUESTS.labels(pol.product, "unknown", "unauthenticated").inc()
             with contextlib.suppress(AuditUnavailable):  # refused either way
                 audited("unknown", "", "denied", "invalid gateway key", operation=operation)
-            return error(401, "authentication_error", "invalid gateway key")
-        caller_name, caller = found
+            return error(
+                401, "authentication_error", "invalid gateway key, or a session token that has ended"
+            )
+        caller_name, caller, sess = found
         try:
             body = await request.json()
         except ValueError:
@@ -230,6 +260,8 @@ def create_app(
             return error(400, "invalid_request_error", "body must be a JSON object")
         model = str(body.get("model", ""))
         labels = labels_of(request.headers)
+        if sess is not None:  # a session's labels are the ones it was minted with, whatever it sends
+            labels = {**labels, **sess.labels, "session": sess.id}
 
         def refuse(status: int, kind: str, message: str, metric: str, **details: Any) -> Response:
             if metric:
@@ -238,8 +270,9 @@ def create_app(
                 audited(caller_name, model, "denied", message, labels=labels, operation=operation, **details)
             return error(status, kind, message)
 
-        if not caller.may_use(model):
-            return refuse(403, "permission_error", f"{caller_name} may not use {model}", "model_denied")
+        if not caller.may_use(model) or (sess is not None and not sess.may_use(model)):
+            who = f"this session of {caller_name}" if sess is not None else caller_name
+            return refuse(403, "permission_error", f"{who} may not use {model}", "model_denied")
         route = pol.provider_for(model, operation)
         if route is None:
             what = "" if operation == "messages" else f" for {operation}"
@@ -263,6 +296,8 @@ def create_app(
                 return refuse(400, "invalid_request_error", problem, "")
         if ledger.spent_today(caller_name) >= caller.budget_usd_per_day:
             return refuse(429, "rate_limit_error", f"{caller_name} has used its daily budget", "over_budget")
+        if sess is not None and sess.spent_usd >= sess.budget_usd:
+            return refuse(429, "rate_limit_error", "this session has used its budget", "session_over_budget")
 
         rule = pol.rule()
         redacted: dict[str, int] = {}
@@ -303,7 +338,21 @@ def create_app(
         except AuditUnavailable:
             REQUESTS.labels(pol.product, caller_name, "audit_unavailable").inc()
             return error(503, "api_error", "the audit trail is unavailable; try again shortly")
-        return Admitted(caller_name, caller, body, model, provider_name, labels, request_id, redacted)
+        return Admitted(
+            caller_name,
+            caller,
+            body,
+            model,
+            provider_name,
+            labels,
+            request_id,
+            redacted,
+            session_id=sess.id if sess is not None else "",
+        )
+
+    def charge(a: Admitted, cost: float) -> None:
+        if a.session_id:
+            state["sessions"].spend(a.session_id, cost)
 
     def settle(a: Admitted, res: Result, operation: str) -> Response:
         """Record usage and cost for an answered call and return the provider's answer."""
@@ -317,6 +366,7 @@ def create_app(
                 request_id=a.request_id,
                 labels=a.labels,
             )
+            charge(a, cost)
             annotate(
                 trace.get_current_span(),
                 caller=a.caller_name,
@@ -335,6 +385,139 @@ def create_app(
     def unreachable(a: Admitted, exc: Exception) -> Response:
         REQUESTS.labels(state["policy"].product, a.caller_name, "upstream_error").inc()
         return error(502, "api_error", f"provider unreachable: {type(exc).__name__}")
+
+    @app.post("/v1/messages/count_tokens")
+    async def count_tokens(request: Request) -> Response:
+        a = await admit(request, "messages")
+        if not isinstance(a, Admitted):
+            return a
+        ad = adapter(a.provider_name)
+        if not isinstance(ad, AnthropicAdapter):
+            return error(
+                400, "invalid_request_error", f"token counting is not available for {a.provider_name}"
+            )
+        try:
+            res = await ad.count_tokens(a.body, dict(request.headers.items()))
+        except httpx.HTTPError as exc:
+            return unreachable(a, exc)
+        return JSONResponse(res.body, status_code=res.status, headers={"request-id": a.request_id})
+
+    # ------------------------------------------------------------------ session tokens
+
+    def minter(request: Request) -> tuple[str, Caller] | Response:
+        """The caller minting or managing sessions: by its own key, never by a session token."""
+        found = caller_of(request)
+        if found is None or found[2] is not None:
+            return error(
+                401, "authentication_error", "sessions are managed with the caller's own gateway key"
+            )
+        name, caller, _ = found
+        if caller.sessions is None:
+            return error(403, "permission_error", f"{name} may not mint session tokens")
+        return name, caller
+
+    @app.post("/v1/sessions")
+    async def mint_session(request: Request) -> Response:
+        pol: Policy = state["policy"]
+        who = minter(request)
+        if isinstance(who, Response):
+            return who
+        name, caller = who
+        grant = caller.sessions
+        assert grant is not None
+        try:
+            body = await request.json()
+        except ValueError:
+            return error(400, "invalid_request_error", "body must be JSON")
+        if not isinstance(body, dict):
+            return error(400, "invalid_request_error", "body must be a JSON object")
+        try:
+            budget = float(body.get("budget_usd", 0))
+            ttl = int(body.get("ttl_s", 0))
+        except (TypeError, ValueError):
+            return error(400, "invalid_request_error", "budget_usd and ttl_s must be numbers")
+        data_class = str(body.get("data_class", ""))
+        models = body.get("models") or list(caller.models)
+        labels = body.get("labels") or {}
+        problem = ""
+        if not 0 < budget <= grant.max_budget_usd:
+            problem = f"budget_usd must be more than 0 and at most {grant.max_budget_usd}"
+        elif not 0 < ttl <= grant.max_ttl_s:
+            problem = f"ttl_s must be more than 0 and at most {grant.max_ttl_s}"
+        elif not isinstance(models, list) or not all(isinstance(m, str) and m for m in models):
+            problem = "models must be a list of model names"
+        elif not all(caller.may_use(m) for m in models):
+            problem = f"{name} may not use every model asked for"
+        elif not isinstance(labels, dict) or not all(isinstance(v, str) for v in labels.values()):
+            problem = "labels must map names to strings"
+        elif not pol.serves_data_class(data_class):
+            return error(
+                403,
+                "permission_error",
+                f"this gateway serves {pol.data_class} data; not a {data_class or '?'} session",
+            )
+        if problem:
+            return error(400, "invalid_request_error", problem)
+        labels = {str(k).lower(): str(v)[:200] for k, v in labels.items()}
+        try:
+            sess, token = state["sessions"].mint(
+                name,
+                budget_usd=budget,
+                ttl_s=ttl,
+                models=models,
+                labels=labels,
+                data_class=data_class,
+                max_open=grant.max_open,
+            )
+        except SessionRefused as exc:
+            return error(429, "rate_limit_error", str(exc))
+        try:
+            audited(
+                name,
+                "",
+                "success",
+                action="llm.session.minted",
+                session=sess.id,
+                budget_usd=budget,
+                ttl_s=ttl,
+                models=models,
+                labels=labels,
+                data_class=data_class,
+            )
+        except AuditUnavailable:
+            state["sessions"].revoke(sess.id, name)
+            return error(503, "api_error", "the audit trail is unavailable; try again shortly")
+        return JSONResponse({**sess.view(), "token": token}, status_code=201)
+
+    @app.get("/v1/sessions/{session_id}")
+    def read_session(session_id: str, request: Request) -> Response:
+        who = minter(request)
+        if isinstance(who, Response):
+            return who
+        sess = state["sessions"].get(session_id, who[0])
+        if sess is None:
+            return error(404, "not_found_error", "no such session")
+        return JSONResponse(sess.view())
+
+    @app.delete("/v1/sessions/{session_id}")
+    def revoke_session(session_id: str, request: Request) -> Response:
+        who = minter(request)
+        if isinstance(who, Response):
+            return who
+        sess = state["sessions"].revoke(session_id, who[0])
+        if sess is None:
+            return error(404, "not_found_error", "no such session")
+        with contextlib.suppress(AuditUnavailable):  # the token is dead either way
+            audited(
+                who[0],
+                "",
+                "success",
+                action="llm.session.revoked",
+                session=sess.id,
+                spent_usd=round(sess.spent_usd, 6),
+                calls=sess.calls,
+            )
+        return JSONResponse(sess.view())
 
     @app.post("/v1/embeddings")
     async def embeddings(request: Request) -> Response:
@@ -388,6 +571,7 @@ def create_app(
                         request_id=request_id,
                         labels=labels,
                     )
+                    charge(a, cost)
                     annotate(
                         span,
                         caller=caller_name,

@@ -37,6 +37,15 @@ class AnthropicAdapter:
         data = res.json()
         return Result(status=res.status_code, body=data, usage=data.get("usage") or {})
 
+    async def count_tokens(self, body: dict[str, Any], headers: dict[str, str]) -> Result:
+        res = await self.client.post(
+            f"{self.provider.base_url}/v1/messages/count_tokens",
+            json=body,
+            headers=self._headers(headers),
+            timeout=60,
+        )
+        return Result(status=res.status_code, body=res.json(), usage={})
+
     async def stream(
         self, body: dict[str, Any], headers: dict[str, str], usage: dict[str, Any]
     ) -> AsyncIterator[bytes]:
