@@ -1,0 +1,10 @@
+# gitleaks (the managed security.yml reads this): the default rules, minus test fixtures that only
+# look like secrets. Each entry matches one exact fake value in one file, in every commit.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "The fake AWS access key the redaction tests send, to see it removed"
+condition = "AND"
+paths = ['''^tests/test_gateway\.py$''']
+regexes = ['''AKIA(ABCDEFGH)(IJKLMNOP)''']  # split so this file isn't itself flagged
