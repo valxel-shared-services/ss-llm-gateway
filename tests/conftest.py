@@ -58,6 +58,39 @@ class Upstream:
     def __call__(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         self.requests.append((str(request.url), dict(request.headers), body))
+        if request.url.path.endswith("/v1/responses"):
+            response = {
+                "id": "resp_1",
+                "object": "response",
+                "status": "completed",
+                "model": body["model"],
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "Done"}],
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 1000,
+                    "input_tokens_details": {"cached_tokens": 400},
+                    "output_tokens": 100,
+                },
+            }
+            if body.get("stream"):
+                events = [
+                    {
+                        "type": "response.created",
+                        "response": {**response, "status": "in_progress", "usage": None},
+                    },
+                    {"type": "response.output_text.delta", "delta": "Done"},
+                    {"type": "response.completed", "response": response},
+                ]
+                sse = "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events)
+                return httpx.Response(
+                    200, content=sse.encode(), headers={"content-type": "text/event-stream"}
+                )
+            return httpx.Response(200, json=response)
         if request.url.host == "anthropic.test":
             if body.get("stream"):
                 events = [

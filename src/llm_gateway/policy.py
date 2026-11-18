@@ -15,13 +15,13 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 DataClass = Literal["general", "payments", "phi"]
 RedactionMode = Literal["off", "redact", "block"]
-Operation = Literal["messages", "embeddings", "rerank"]
+Operation = Literal["messages", "embeddings", "rerank", "responses"]
 
 # What each provider type can do unless the policy narrows it. Rerank is opt-in: only some
 # OpenAI-compatible servers (vLLM, TEI, Cohere, Voyage) serve it.
 DEFAULT_OPERATIONS: dict[str, list[Operation]] = {
     "anthropic": ["messages"],
-    "openai": ["messages", "embeddings"],
+    "openai": ["messages", "embeddings", "responses"],
 }
 
 

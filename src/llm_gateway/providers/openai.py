@@ -1,6 +1,11 @@
-"""OpenAI-compatible chat completions (OpenAI, Azure OpenAI, vLLM, and others that speak it).
-Translates the common subset: system, text, tool definitions, tool calls and tool results.
-Streaming is not translated; agents that need it use an Anthropic-type provider."""
+"""OpenAI-compatible providers (OpenAI, Azure OpenAI, vLLM, and others that speak it).
+
+Messages: chat completions, translated from and to the Anthropic Messages API (the common subset:
+system, text, tool definitions, tool calls and tool results); not streamed.
+
+Responses: OpenAI's Responses API, passed through as it is, streamed or not: what agents built
+on it send (Codex). Usage is read from the response, or the `response.completed` event, and
+given to the ledger in the Messages API's shape."""
 
 from __future__ import annotations
 
@@ -135,3 +140,57 @@ class OpenAIAdapter:
     ) -> AsyncIterator[bytes]:
         raise NotImplementedError("streaming is only available from Anthropic-type providers")
         yield b""  # pragma: no cover
+
+
+def responses_usage(response: dict[str, Any]) -> dict[str, int]:
+    """A Responses API usage block in the shape the ledger prices (the Messages API's)."""
+    u = response.get("usage") or {}
+    cached = int((u.get("input_tokens_details") or {}).get("cached_tokens") or 0)
+    return {
+        "input_tokens": max(0, int(u.get("input_tokens") or 0) - cached),
+        "output_tokens": int(u.get("output_tokens") or 0),
+        "cache_read_input_tokens": cached,
+        "cache_creation_input_tokens": 0,
+    }
+
+
+class ResponsesAdapter:
+    """OpenAI's Responses API, passed through."""
+
+    def __init__(self, provider: Provider, client: httpx.AsyncClient) -> None:
+        self.provider = provider
+        self.client = client
+
+    @property
+    def url(self) -> str:
+        return f"{self.provider.base_url}/v1/responses"
+
+    async def create(self, body: dict[str, Any]) -> Result:
+        res = await self.client.post(self.url, json=body, headers=auth(self.provider), timeout=600)
+        try:
+            data = res.json()
+        except ValueError:
+            data = {"error": {"message": res.text[:500] or "upstream error"}}
+        if res.status_code >= 400:
+            return Result(status=res.status_code, usage={}, body=data)
+        return Result(status=200, body=data, usage=responses_usage(data))
+
+    async def stream(self, body: dict[str, Any], usage: dict[str, Any]) -> AsyncIterator[bytes]:
+        async with self.client.stream(
+            "POST", self.url, json=body, headers=auth(self.provider), timeout=600
+        ) as res:
+            buffer = b""
+            async for chunk in res.aiter_bytes():
+                yield chunk
+                buffer += chunk
+                while b"\n\n" in buffer:  # usage arrives with response.completed
+                    event, buffer = buffer.split(b"\n\n", 1)
+                    for line in event.split(b"\n"):
+                        if not line.startswith(b"data:"):
+                            continue
+                        try:
+                            data = json.loads(line[5:])
+                        except ValueError:
+                            continue
+                        if data.get("type") in ("response.completed", "response.incomplete"):
+                            usage.update(responses_usage(data.get("response") or {}))

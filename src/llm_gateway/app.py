@@ -5,6 +5,7 @@ gateway key as the API key; nothing else changes in agent code.
   POST /v1/messages/count_tokens   Anthropic token counting (Anthropic providers)
   POST /v1/sessions     mint a session token (callers with a `sessions` grant; sessions.py)
   GET  /v1/sessions/{id}, DELETE /v1/sessions/{id}   read or revoke one, with what it spent
+  POST /v1/responses    OpenAI Responses API, passed through (OpenAI-type providers; Codex), streamed or not
   POST /v1/embeddings   OpenAI-style embeddings, for knowledge components
   POST /v1/rerank       Cohere-style reranking, for knowledge components
   GET  /healthz         liveness;  GET /readyz  readiness (policy loaded, provider keys present)
@@ -48,8 +49,8 @@ from .ledger import REDACTIONS, REQUESTS, Ledger
 from .policy import Caller, Operation, Policy, load_policy
 from .providers import Adapter, Result, retrieval
 from .providers.anthropic import AnthropicAdapter
-from .providers.openai import OpenAIAdapter
-from .redaction import Findings, scrub_fields, scrub_request
+from .providers.openai import OpenAIAdapter, ResponsesAdapter
+from .redaction import Findings, scrub_fields, scrub_request, scrub_responses
 from .sessions import TOKEN_PREFIX, Session, SessionRefused, SessionStore
 
 # Callers label requests with x-valxel-* headers (x-vrixel-* from before the rename still works).
@@ -308,19 +309,27 @@ def create_app(
                 "no_provider",
             )
         provider_name, _ = route
-        if operation == "messages" and int(body.get("max_tokens") or 0) > caller.max_tokens:
+        cap_field = {"messages": "max_tokens", "responses": "max_output_tokens"}.get(operation)
+        if cap_field and int(body.get(cap_field) or 0) > caller.max_tokens:
             return refuse(
                 400,
                 "invalid_request_error",
                 f"max_tokens is capped at {caller.max_tokens} for {caller_name}",
                 "",
             )
-        if operation != "messages":
+        if operation in ("embeddings", "rerank"):
             problem = check_texts(body, operation, caller.max_inputs)
             if problem:
                 return refuse(400, "invalid_request_error", problem, "")
         if ledger.spent_today(caller_name) >= caller.budget_usd_per_day:
             return refuse(429, "rate_limit_error", f"{caller_name} has used its daily budget", "over_budget")
+        if sess is not None and pol.price(model) is None:  # unpriced, a session's budget couldn't hold it
+            return refuse(
+                403,
+                "permission_error",
+                f"{model} has no price in this gateway's policy: sessions use priced models",
+                "unpriced",
+            )
         if sess is not None and sess.spent_usd >= sess.budget_usd:
             return refuse(429, "rate_limit_error", "this session has used its budget", "session_over_budget")
 
@@ -330,6 +339,8 @@ def create_app(
             findings: Findings
             if operation == "messages":
                 scrubbed, findings = scrub_request(body, rule.detectors)
+            elif operation == "responses":
+                scrubbed, findings = scrub_responses(body, rule.detectors)
             else:
                 scrubbed, findings = scrub_fields(body, texts, rule.detectors)
             for kind, n in findings.counts.items():
@@ -566,6 +577,59 @@ def create_app(
         except httpx.HTTPError as exc:
             return unreachable(a, exc)
         return settle(a, res, "rerank")
+
+    @app.post("/v1/responses")
+    async def responses(request: Request) -> Response:
+        """OpenAI's Responses API (Codex), passed through to an OpenAI-type provider under the same
+        rules as messages: the caller's key or session token, its models, the data class's provider
+        rule and redaction, the budgets, the audit record and the ledger."""
+        a = await admit(request, "responses")
+        if not isinstance(a, Admitted):
+            return a
+        p = state["policy"].providers[a.provider_name]
+        if p.type != "openai":
+            return error(
+                400, "invalid_request_error", f"the Responses API is not available for {a.provider_name}"
+            )
+        ad = ResponsesAdapter(p, state["client"])
+        if a.body.get("stream"):
+            usage: dict[str, Any] = {}
+            span = trace.get_current_span()
+
+            async def relay() -> AsyncIterator[bytes]:
+                try:
+                    async for chunk in ad.stream(a.body, usage):
+                        yield chunk
+                finally:
+                    cost = state["ledger"].record(
+                        caller=a.caller_name,
+                        model=a.model,
+                        provider=a.provider_name,
+                        usage=usage,
+                        request_id=a.request_id,
+                        labels=a.labels,
+                    )
+                    charge(a, cost)
+                    annotate(
+                        span,
+                        caller=a.caller_name,
+                        model=a.model,
+                        provider=a.provider_name,
+                        usage=usage,
+                        cost=cost,
+                        labels=a.labels,
+                        operation="responses",
+                    )
+                    REQUESTS.labels(state["policy"].product, a.caller_name, "ok").inc()
+
+            return StreamingResponse(
+                relay(), media_type="text/event-stream", headers={"request-id": a.request_id}
+            )
+        try:
+            res = await ad.create(a.body)
+        except httpx.HTTPError as exc:
+            return unreachable(a, exc)
+        return settle(a, res, "responses")
 
     @app.post("/v1/messages")
     async def messages(request: Request) -> Response:

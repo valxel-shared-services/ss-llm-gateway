@@ -81,7 +81,8 @@ The session points its Anthropic client at the gateway (`ANTHROPIC_BASE_URL`) wi
 its key. A gateway serves sessions of its own data class, or general ones: a PHI session can't be
 minted on a gateway set up for general data. A session's spend counts towards its own budget and
 its caller's daily one; a streamed call that crosses the session's budget finishes, and the next
-is refused. Tokens live in memory, like the ledger: run one replica, and a restart ends every open
+is refused. A session may use only models the policy prices (a self-hosted one at 0, say), so its budget
+always holds: that is the live dollar cap for agents with none of their own, such as Codex. Tokens live in memory, like the ledger: run one replica, and a restart ends every open
 session. Minting and revoking are audited (`llm.session.minted`, `llm.session.revoked`).
 
 ## One gateway for several data classes
@@ -119,6 +120,7 @@ callers:
 | `POST /v1/messages/count_tokens` | Anthropic token counting |
 | `POST /v1/sessions` | Mint a session token: `{budget_usd, ttl_s, data_class, models?, labels?}` → `{id, token, expires_at, ...}`. The caller's own key only, and only with a `sessions` grant |
 | `GET /v1/sessions/{id}`, `DELETE /v1/sessions/{id}` | Read a session's spend, or revoke it (returns what it spent) |
+| `POST /v1/responses` | OpenAI's Responses API, streamed or not, passed through to an OpenAI-type provider (Codex). The same rules as messages: models, the data class's provider rule, redaction of instructions and input, `max_output_tokens` under the caller's cap, budgets, audit, ledger |
 | `POST /v1/embeddings` | OpenAI-style embeddings |
 | `POST /v1/rerank` | Cohere-style reranking |
 | `GET /healthz`, `GET /readyz` | Liveness; readiness checks the policy and provider keys (self-hosted models without a key are fine) |
