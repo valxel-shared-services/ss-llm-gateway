@@ -2,7 +2,6 @@
 
 import hashlib
 
-
 from .conftest import KEY, policy
 
 TOOL_KEY = "sdlc-tool-key"
