@@ -96,6 +96,30 @@ def scrub_request(body: dict[str, Any], detectors: list[str]) -> tuple[dict[str,
     return out, findings
 
 
+RESPONSES_TEXT = ("instructions", "input", "content", "text", "output")
+
+
+def scrub_responses(body: dict[str, Any], detectors: list[str]) -> tuple[dict[str, Any], Findings]:
+    """Apply detectors to every text a Responses API request sends: its instructions, and its input
+    (a string, or items whose content parts, tool outputs and reasoning summaries hold text)."""
+    findings = Findings()
+
+    def walk(value: Any) -> Any:
+        if isinstance(value, str):
+            return scrub(value, detectors, findings)
+        if isinstance(value, list):
+            return [walk(v) for v in value]
+        if isinstance(value, dict):
+            return {k: (walk(v) if k in RESPONSES_TEXT else v) for k, v in value.items()}
+        return value
+
+    out = dict(body)
+    for key in ("instructions", "input"):
+        if key in out:
+            out[key] = walk(out[key])
+    return out, findings
+
+
 def scrub_fields(
     body: dict[str, Any], fields: tuple[str, ...], detectors: list[str]
 ) -> tuple[dict[str, Any], Findings]:
