@@ -186,6 +186,7 @@ def create_app(
         outcome: Outcome,
         reason: str = "",
         action: str = "llm.request",
+        data_class: str = "",
         **details: Any,
     ) -> None:
         state["audit"].record(
@@ -195,6 +196,7 @@ def create_app(
             outcome=outcome,
             reason=reason,
             details={k: v for k, v in details.items() if v},
+            data_class=data_class,
         )
 
     def adapter(provider_name: str) -> Adapter:
@@ -262,24 +264,47 @@ def create_app(
         labels = labels_of(request.headers)
         if sess is not None:  # a session's labels are the ones it was minted with, whatever it sends
             labels = {**labels, **sess.labels, "session": sess.id}
+        # The data class it's held to: a session's own; else what a caller that may declare one did.
+        declared = (
+            sess.data_class if sess is not None else request.headers.get("x-valxel-data-class", "").strip()
+        )
+        data_class = pol.class_for(declared, caller) or ""
+        labels.pop("data-class", None)  # recorded as the audit record's data class, not a label
 
         def refuse(status: int, kind: str, message: str, metric: str, **details: Any) -> Response:
             if metric:
                 REQUESTS.labels(pol.product, caller_name, metric).inc()
             with contextlib.suppress(AuditUnavailable):  # refused either way
-                audited(caller_name, model, "denied", message, labels=labels, operation=operation, **details)
+                audited(
+                    caller_name,
+                    model,
+                    "denied",
+                    message,
+                    labels=labels,
+                    operation=operation,
+                    data_class=data_class or declared,
+                    **details,
+                )
             return error(status, kind, message)
+
+        if not data_class:
+            return refuse(
+                403,
+                "permission_error",
+                f"{caller_name} may not send {declared} data through this gateway",
+                "data_class_denied",
+            )
 
         if not caller.may_use(model) or (sess is not None and not sess.may_use(model)):
             who = f"this session of {caller_name}" if sess is not None else caller_name
             return refuse(403, "permission_error", f"{who} may not use {model}", "model_denied")
-        route = pol.provider_for(model, operation)
+        route = pol.provider_for(model, operation, data_class)
         if route is None:
             what = "" if operation == "messages" else f" for {operation}"
             return refuse(
                 403,
                 "permission_error",
-                f"no provider approved for {pol.data_class} data serves {model}{what}",
+                f"no provider approved for {data_class} data serves {model}{what}",
                 "no_provider",
             )
         provider_name, _ = route
@@ -299,7 +324,7 @@ def create_app(
         if sess is not None and sess.spent_usd >= sess.budget_usd:
             return refuse(429, "rate_limit_error", "this session has used its budget", "session_over_budget")
 
-        rule = pol.rule()
+        rule = pol.rule(data_class)
         redacted: dict[str, int] = {}
         if rule.redaction != "off":
             findings: Findings
@@ -334,6 +359,7 @@ def create_app(
                 labels=labels,
                 operation=operation,
                 stream=bool(body.get("stream")),
+                data_class=data_class,
             )
         except AuditUnavailable:
             REQUESTS.labels(pol.product, caller_name, "audit_unavailable").inc()
@@ -450,7 +476,7 @@ def create_app(
             problem = f"{name} may not use every model asked for"
         elif not isinstance(labels, dict) or not all(isinstance(v, str) for v in labels.values()):
             problem = "labels must map names to strings"
-        elif not pol.serves_data_class(data_class):
+        elif not pol.serves_data_class(data_class, caller):
             return error(
                 403,
                 "permission_error",

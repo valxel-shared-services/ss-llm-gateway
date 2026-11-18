@@ -166,8 +166,10 @@ class Auditor:
         reason: str = "",
         on_behalf_of: str = "",
         details: dict[str, Any] | None = None,
+        data_class: str = "",
     ) -> dict[str, Any]:
-        """Publish one audit record. `details` may hold counts, codes and ids, never field values."""
+        """Publish one audit record. `details` may hold counts, codes and ids, never field values.
+        `data_class` is the class of the data this action handled, where it isn't the service's own."""
         rtype, ids = resource[0], sorted({str(i) for i in resource[1] if i})
         trace_id, span_id = _trace_ids()
         event: dict[str, Any] = {
@@ -182,7 +184,7 @@ class Auditor:
                 "product": self.product,
                 "service": self.service,
                 "environment": self.environment,
-                "data_class": self.data_class,
+                "data_class": data_class or self.data_class,
                 "action": action,
                 "actor": {"id": actor.id, "type": actor.type, "client": actor.client},
                 "on_behalf_of": on_behalf_of,

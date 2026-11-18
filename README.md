@@ -84,6 +84,23 @@ its caller's daily one; a streamed call that crosses the session's budget finish
 is refused. Tokens live in memory, like the ledger: run one replica, and a restart ends every open
 session. Minting and revoking are audited (`llm.session.minted`, `llm.session.revoked`).
 
+## One gateway for several data classes
+
+A gateway serves its deployment's data class. An orchestrator that works for products of several
+classes, such as the SDLC tool, can use one gateway for all of them: its caller entry lists the
+classes it may declare, and each request declares its class with `x-valxel-data-class` (a session
+token is held to the class it was minted for, whatever it sends). The declared class's rule
+applies: which providers may serve it (a BAA for PHI), and its redaction. A caller declaring a class
+it may not is refused, and a policy can't list a class with no rule. The audit record names the
+class each request was held to.
+
+```yaml
+data_class: general
+callers:
+  sdlc-tool:
+    data_classes: [payments, phi]
+```
+
 ## Audit settings
 
 | Variable | Default | |
