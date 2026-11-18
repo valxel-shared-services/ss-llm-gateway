@@ -80,6 +80,10 @@ class Caller(BaseModel):
     max_tokens: int = 8192
     max_inputs: int = 256  # texts per embeddings call, documents per rerank call
     sessions: SessionGrant | None = None  # may mint session tokens (POST /v1/sessions)
+    # Data classes this caller may declare per request (`x-valxel-data-class`) and mint sessions
+    # for, beyond the deployment's own: for an orchestrator, like the SDLC tool, working for
+    # products of several classes through one gateway. The declared class's rule applies.
+    data_classes: list[DataClass] = Field(default_factory=list)
 
     def may_use(self, model: str) -> bool:
         return any(fnmatch.fnmatch(model, p) for p in self.models)
@@ -111,13 +115,33 @@ class Policy(BaseModel):
                 raise ValueError(f"caller {name}: key_sha256 must be a hex SHA-256 of its key")
         return v
 
-    def serves_data_class(self, data_class: str) -> bool:
-        """A session of this data class may use this gateway: its own class, or general data,
-        which every gateway's rules cover. PHI never goes through a gateway set up for less."""
-        return data_class in (self.data_class, "general")
+    @model_validator(mode="after")
+    def _declared_classes_have_rules(self) -> Policy:
+        for name, c in self.callers.items():
+            missing = [d for d in c.data_classes if d not in self.data_classes]
+            if missing:
+                raise ValueError(
+                    f"caller {name} may declare {', '.join(missing)} with no rule for it in data_classes"
+                )
+        return self
 
-    def rule(self) -> DataClassRule:
-        return self.data_classes.get(self.data_class, DataClassRule())
+    def serves_data_class(self, data_class: str, caller: Caller | None = None) -> bool:
+        """A session of this data class may use this gateway: its own class, general data, which
+        every gateway's rules cover, or one its caller may declare. PHI never goes through a
+        gateway set up for less unless the policy says so, rule and all."""
+        return data_class in (self.data_class, "general") or (
+            caller is not None and data_class in caller.data_classes
+        )
+
+    def class_for(self, declared: str, caller: Caller) -> str | None:
+        """The data class a request is held to: the deployment's own, or one its caller declared and
+        may declare. None if it declared one it may not."""
+        if not declared or declared == self.data_class:
+            return self.data_class
+        return declared if declared in caller.data_classes else None
+
+    def rule(self, data_class: str = "") -> DataClassRule:
+        return self.data_classes.get(data_class or self.data_class, DataClassRule())
 
     def caller_for(self, key: str) -> tuple[str, Caller] | None:
         digest = hashlib.sha256(key.encode()).hexdigest()
@@ -126,10 +150,12 @@ class Policy(BaseModel):
                 return name, c
         return None
 
-    def provider_for(self, model: str, operation: Operation = "messages") -> tuple[str, Provider] | None:
+    def provider_for(
+        self, model: str, operation: Operation = "messages", data_class: str = ""
+    ) -> tuple[str, Provider] | None:
         """The first provider that serves the model for this operation and is allowed for this data
         class. Where a BAA is required, a self-hosted model qualifies too: the data stays inside."""
-        rule = self.rule()
+        rule = self.rule(data_class)
         for name, p in self.providers.items():
             allowed = p.baa or p.self_hosted or not rule.require_baa
             if p.serves(model) and p.does(operation) and allowed:
