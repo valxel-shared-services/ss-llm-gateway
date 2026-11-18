@@ -18,6 +18,7 @@ client = anthropic.Anthropic(base_url=os.environ["LLM_GATEWAY_URL"], api_key=os.
 | Who may call what | Each agent or knowledge component has its own key (only its SHA-256 is in the policy), its own model list, a `max_tokens` cap and a `max_inputs` cap (texts per embeddings or rerank call) |
 | Data that must not reach a model | Payments: card numbers (Luhn-checked) block the request. General: secrets, card numbers and SSNs are redacted. PHI: provider-level control instead, since the BAA covers the content |
 | Spend | A daily budget per agent; the request is refused with `rate_limit_error` once it is used |
+| Session tokens | A caller with a `sessions` grant mints a short-lived token per agent session (below) so the session never holds a provider key or the caller's own key. The token expires, has its own budget within the caller's, may use only the models it was minted for, carries fixed labels, and is revoked when the session ends |
 | Accountability | One JSON log line per call (product, agent, model, tokens, cache reads and writes, cost, request id, any `x-valxel-*` labels such as component or feature id; `x-vrixel-*` still works) and Prometheus metrics |
 | Audit | Every request is audited before it reaches a provider (CloudEvents `valxel.audit.v1` on the product's Kafka audit topic): caller, model, provider, kinds of data redacted, and every refusal with its reason. Never content. If the record can't be published the request is refused (`GATEWAY_AUDIT_REQUIRED`, default true) |
 | Tracing | OpenTelemetry (`OTEL_EXPORTER_OTLP_ENDPOINT`): each request joins the agent's trace, with the provider call as a child span; logs are JSON with `trace.id`. The request's span carries the call in OpenTelemetry's GenAI terms (`gen_ai.request.model`, `gen_ai.provider.name`, `gen_ai.usage.*`) with `valxel.cost_usd`, the caller and its `agent`, `variant`, `run` labels, never the prompt or the reply |
@@ -61,6 +62,28 @@ Deploy it in each product's OpenChoreo project with:
 - One replica, or move the budget ledger to Redis or Postgres first (it is in memory).
 - No ingress from outside the project: only the product's agents call it.
 
+## Session tokens
+
+An orchestrator that runs agent sessions, such as the SDLC tool running Claude Code, gets a
+`sessions` grant in the policy and mints one token per session:
+
+```yaml
+callers:
+  sdlc-tool:
+    key_sha256: "..."
+    budget_usd_per_day: 200
+    models: ["claude-*"]
+    max_tokens: 64000
+    sessions: { max_budget_usd: 20, max_ttl_s: 7200, max_open: 50 }
+```
+
+The session points its Anthropic client at the gateway (`ANTHROPIC_BASE_URL`) with the token as
+its key. A gateway serves sessions of its own data class, or general ones: a PHI session can't be
+minted on a gateway set up for general data. A session's spend counts towards its own budget and
+its caller's daily one; a streamed call that crosses the session's budget finishes, and the next
+is refused. Tokens live in memory, like the ledger: run one replica, and a restart ends every open
+session. Minting and revoking are audited (`llm.session.minted`, `llm.session.revoked`).
+
 ## Audit settings
 
 | Variable | Default | |
@@ -76,6 +99,9 @@ Deploy it in each product's OpenChoreo project with:
 | Path | Purpose |
 | --- | --- |
 | `POST /v1/messages` | Anthropic Messages API |
+| `POST /v1/messages/count_tokens` | Anthropic token counting |
+| `POST /v1/sessions` | Mint a session token: `{budget_usd, ttl_s, data_class, models?, labels?}` → `{id, token, expires_at, ...}`. The caller's own key only, and only with a `sessions` grant |
+| `GET /v1/sessions/{id}`, `DELETE /v1/sessions/{id}` | Read a session's spend, or revoke it (returns what it spent) |
 | `POST /v1/embeddings` | OpenAI-style embeddings |
 | `POST /v1/rerank` | Cohere-style reranking |
 | `GET /healthz`, `GET /readyz` | Liveness; readiness checks the policy and provider keys (self-hosted models without a key are fine) |

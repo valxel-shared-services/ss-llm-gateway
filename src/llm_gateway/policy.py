@@ -64,12 +64,22 @@ class DataClassRule(BaseModel):
     )
 
 
+class SessionGrant(BaseModel):
+    """What a caller may hand out as session tokens (sessions.py): the most any one may spend and
+    how long it may live, and how many may be open at once."""
+
+    max_budget_usd: float = 20.0
+    max_ttl_s: int = 7200
+    max_open: int = 50
+
+
 class Caller(BaseModel):
     key_sha256: str
     budget_usd_per_day: float = 25.0
     models: list[str] = Field(default_factory=lambda: ["*"])
     max_tokens: int = 8192
     max_inputs: int = 256  # texts per embeddings call, documents per rerank call
+    sessions: SessionGrant | None = None  # may mint session tokens (POST /v1/sessions)
 
     def may_use(self, model: str) -> bool:
         return any(fnmatch.fnmatch(model, p) for p in self.models)
@@ -100,6 +110,11 @@ class Policy(BaseModel):
             if len(c.key_sha256) != 64:
                 raise ValueError(f"caller {name}: key_sha256 must be a hex SHA-256 of its key")
         return v
+
+    def serves_data_class(self, data_class: str) -> bool:
+        """A session of this data class may use this gateway: its own class, or general data,
+        which every gateway's rules cover. PHI never goes through a gateway set up for less."""
+        return data_class in (self.data_class, "general")
 
     def rule(self) -> DataClassRule:
         return self.data_classes.get(self.data_class, DataClassRule())
