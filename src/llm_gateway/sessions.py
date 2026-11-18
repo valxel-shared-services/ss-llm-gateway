@@ -22,7 +22,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-TOKEN_PREFIX = "vgs_"
+TOKEN_PREFIX = "vgs_"  # noqa: S105 - a prefix that marks session tokens, not a secret
 KEEP_AFTER_S = 3600  # an ended session stays readable this long, then it's dropped
 
 
