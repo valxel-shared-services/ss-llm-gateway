@@ -1,7 +1,7 @@
 """The gateway's HTTP API. Callers use the Anthropic SDK with base_url pointed here and their
 gateway key as the API key; nothing else changes in agent code.
 
-  POST /v1/messages     Anthropic Messages API (streaming included for Anthropic providers)
+  POST /v1/messages     Anthropic Messages API, streamed or not (OpenAI-compatible providers translated)
   POST /v1/messages/count_tokens   Anthropic token counting (Anthropic providers)
   POST /v1/sessions     mint a session token (callers with a `sessions` grant; sessions.py)
   GET  /v1/sessions/{id}, DELETE /v1/sessions/{id}   read or revoke one, with what it spent
@@ -673,7 +673,7 @@ def create_app(
                     )
                     REQUESTS.labels(pol.product, caller_name, "ok").inc()
 
-            if not isinstance(ad, AnthropicAdapter):
+            if not isinstance(ad, (AnthropicAdapter, OpenAIAdapter)):
                 return error(400, "invalid_request_error", f"streaming is not available for {provider_name}")
             return StreamingResponse(
                 relay(), media_type="text/event-stream", headers={"request-id": request_id}
