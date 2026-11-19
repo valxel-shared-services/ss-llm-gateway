@@ -44,7 +44,10 @@ priced per search adds `per_request`.
 
 It passes Anthropic requests through unchanged, so prompt caching (`cache_control`), tools,
 extended thinking and streaming behave exactly as with the API. OpenAI-compatible providers
-(OpenAI, Azure OpenAI, vLLM) are translated for text and tool use, without streaming.
+(OpenAI, Azure OpenAI, vLLM) are translated for text and tool use, streamed or not: a stream
+comes back as the Messages API's events, text as it arrives and each tool call whole at the end.
+Usage is asked for in the last chunk (`stream_options.include_usage`); a provider that ignores it
+is recorded with no tokens.
 
 ## Run it
 

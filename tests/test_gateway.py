@@ -150,9 +150,6 @@ def test_translates_to_openai_compatible_providers(make_client, upstream):
     url, headers, sent = upstream.requests[0]
     assert url == "https://openai.test/v1/chat/completions" and headers["authorization"] == "Bearer sk-openai"
     assert sent["messages"][0] == {"role": "system", "content": "Be brief"}
-    with make_client(pol) as c:
-        streamed = call(c, {"model": "gpt-5", "max_tokens": 5, "stream": True, "messages": []})
-    assert streamed.status_code == 400
 
 
 def test_tool_round_trip_translation():
