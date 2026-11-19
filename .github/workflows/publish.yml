@@ -37,6 +37,8 @@ jobs:
       - name: Build
         run: |
           docker build --pull -t local .
+      - name: It runs
+        run: docker run --rm local python -c "import llm_gateway; print('llm_gateway imports')"
       - name: No high or critical vulnerabilities with a fix
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:

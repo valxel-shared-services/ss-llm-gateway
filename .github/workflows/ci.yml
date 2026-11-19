@@ -68,4 +68,6 @@ jobs:
           persist-credentials: false
       # OpenChoreo builds and ships the image; this only proves the Dockerfile builds on every PR.
       - run: docker build --pull -t ci .
+      # The image runs, not only builds: its virtualenv must match its Python.
+      - run: docker run --rm ci python -c "import llm_gateway; print('llm_gateway imports')"
 
