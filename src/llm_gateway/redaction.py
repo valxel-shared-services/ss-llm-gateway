@@ -26,9 +26,24 @@ _CARD = re.compile(r"\b(?:\d[ -]?){13,19}\b")
 _SSN = re.compile(r"\b(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b")
 _EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 _PHONE = re.compile(r"(?<!\d)(?:\+1[ .-]?)?\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4}(?!\d)")
+# Credentials, the ones this platform hands out first: a session's gateway token (vgs_), the
+# GitHub App installation token its repo access runs on (ghs_), the AWS temporary credentials of
+# workload identity (ASIA..., and their session token). Then the common ones a repo or a log may
+# hold. tests/test_redaction_corpus.py keeps a real-shaped example of each: a credential type the
+# platform starts issuing goes there first.
 _SECRET = re.compile(
-    r"(?:AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|sk-ant-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{36}"
-    r"|xox[baprs]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})"
+    r"(?:"
+    r"vgs_[A-Za-z0-9_-]{20,}"  # this gateway's session tokens
+    r"|gh[pousr]_[A-Za-z0-9]{36,}"  # GitHub: personal, OAuth, user-to-server, installation, refresh
+    r"|github_pat_[A-Za-z0-9_]{22,}"  # GitHub fine-grained personal tokens
+    r"|(?:AKIA|ASIA)[0-9A-Z]{16}"  # AWS access key ids: long-lived and temporary
+    r"|(?:IQoJb3JpZ2lu|FwoGZXIvYXdz)[A-Za-z0-9/+=]{80,}"  # AWS session tokens
+    r"|sk-ant-[A-Za-z0-9_-]{20,}"  # Anthropic
+    r"|sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,}"  # OpenAI
+    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    r"|xox[baprs]-[A-Za-z0-9-]{10,}"  # Slack
+    r"|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"  # JWTs
+    r")"
 )
 
 

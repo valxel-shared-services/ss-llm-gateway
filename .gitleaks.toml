@@ -8,3 +8,7 @@ description = "The fake AWS access key the redaction tests send, to see it remov
 condition = "AND"
 paths = ['''^tests/test_gateway\.py$''']
 regexes = ['''AKIA(ABCDEFGH)(IJKLMNOP)''']  # split so this file isn't itself flagged
+
+[[allowlists]]
+description = "The redaction corpus: made-up credentials of every kind the gateway must redact, by design"
+paths = ['''^tests/test_redaction_corpus\.py$''']

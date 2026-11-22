@@ -43,7 +43,10 @@ def policy(data_class="phi", **over):
                 "models": ["claude-sonnet-*", "gpt-*"],
             }
         },
-        "pricing": {"claude-sonnet-*": {"input": 3.0, "output": 15.0}},
+        "pricing": {
+            "claude-sonnet-*": {"input": 3.0, "output": 15.0},
+            "gpt-*": {"input": 1.25, "output": 10.0},
+        },
     }
     raw.update(over)
     return Policy.model_validate(raw)
