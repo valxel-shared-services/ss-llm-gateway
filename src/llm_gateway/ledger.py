@@ -1,14 +1,11 @@
-"""Usage, cost and budgets. Every call is logged as one JSON line (who, which model, tokens, cost,
-cache use) and counted in Prometheus, so each product sees its own spend by agent and model.
-Budgets are per caller per UTC day. They are held in memory: run one replica, or put the ledger in
-Redis or Postgres before scaling out."""
+"""Usage and cost. Every call is logged as one JSON line (who, which model, tokens, cost, cache use)
+and counted in Prometheus, so each product sees its own spend by agent and model. Budgets, and the
+spend they're held to, are budget.py's."""
 
 from __future__ import annotations
 
 import json
 import logging
-import threading
-from datetime import UTC, datetime
 from typing import Any
 
 from prometheus_client import Counter
@@ -46,16 +43,6 @@ def cost_usd(policy: Policy, model: str, usage: dict[str, Any]) -> float:
 class Ledger:
     def __init__(self, policy: Policy) -> None:
         self.policy = policy
-        self._spent: dict[tuple[str, str], float] = {}
-        self._lock = threading.Lock()
-
-    @staticmethod
-    def _day() -> str:
-        return datetime.now(UTC).date().isoformat()
-
-    def spent_today(self, caller: str) -> float:
-        with self._lock:
-            return float(self._spent.get((caller, self._day()), 0.0))
 
     def record(
         self,
@@ -68,9 +55,6 @@ class Ledger:
         labels: dict[str, str],
     ) -> float:
         cost = cost_usd(self.policy, model, usage)
-        with self._lock:
-            key = (caller, self._day())
-            self._spent[key] = self._spent.get(key, 0.0) + cost
         product = self.policy.product
         for kind in (
             "input_tokens",

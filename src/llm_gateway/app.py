@@ -45,6 +45,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from . import telemetry
 from .audit import Actor, Auditor, AuditUnavailable, Outcome, make_sink
+from .budget import MemoryBudget, OverBudget, Reservation, shared, worst_case_usd
 from .ledger import REDACTIONS, REQUESTS, Ledger
 from .policy import Caller, Operation, Policy, load_policy
 from .providers import Adapter, Result, retrieval
@@ -102,6 +103,7 @@ class Admitted:
     request_id: str
     redacted: dict[str, int] = field(default_factory=dict)
     session_id: str = ""
+    reservation: Reservation | None = None  # its worst-case cost, held until it's answered (budget.py)
 
 
 def annotate(
@@ -163,6 +165,7 @@ def create_app(
     policy: Policy | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
     auditor: Auditor | None = None,
+    database_url: str | None = None,
 ) -> FastAPI:
     state: dict[str, Any] = {}
 
@@ -174,7 +177,15 @@ def create_app(
         state["client"] = httpx.AsyncClient(transport=transport)
         state["ledger"] = Ledger(state["policy"])
         state["audit"] = auditor or make_auditor(state["policy"])
-        state["sessions"] = SessionStore()
+        # Spend and session tokens: shared by every replica in Postgres, or this process's own.
+        url = database_url if database_url is not None else os.environ.get("GATEWAY_DATABASE_URL", "")
+        if url:
+            state["budget"], state["sessions"] = shared(url)
+            state["state"] = "postgres"
+        else:
+            state["sessions"] = SessionStore()
+            state["budget"] = MemoryBudget(state["sessions"])
+            state["state"] = "memory"
         yield
         await state["client"].aclose()
 
@@ -215,7 +226,9 @@ def create_app(
         missing = [n for n, p in pol.providers.items() if p.missing_key()]
         if missing:
             return JSONResponse({"status": "not ready", "missing_keys": missing}, status_code=503)
-        return JSONResponse({"status": "ready", "product": pol.product, "data_class": pol.data_class})
+        return JSONResponse(
+            {"status": "ready", "product": pol.product, "data_class": pol.data_class, "state": state["state"]}
+        )
 
     @app.get("/metrics")
     def metrics() -> Response:
@@ -240,12 +253,12 @@ def create_app(
         return (found[0], found[1], None) if found else None
 
     async def admit(
-        request: Request, operation: Operation, texts: tuple[str, ...] = ()
+        request: Request, operation: Operation, texts: tuple[str, ...] = (), reserve: bool = True
     ) -> Admitted | Response:
         """The rules every route applies, in order, then the audit record. Returns the request to
-        send, or the refusal to return. `texts` are the fields that embeddings and rerank send."""
+        send, or the refusal to return. `texts` are the fields that embeddings and rerank send.
+        `reserve`: hold the call's worst-case cost against the budgets (not for free calls)."""
         pol: Policy = state["policy"]
-        ledger: Ledger = state["ledger"]
         found = caller_of(request)
         if found is None:
             REQUESTS.labels(pol.product, "unknown", "unauthenticated").inc()
@@ -321,8 +334,6 @@ def create_app(
             problem = check_texts(body, operation, caller.max_inputs)
             if problem:
                 return refuse(400, "invalid_request_error", problem, "")
-        if ledger.spent_today(caller_name) >= caller.budget_usd_per_day:
-            return refuse(429, "rate_limit_error", f"{caller_name} has used its daily budget", "over_budget")
         if pol.price(model) is None:  # unpriced: no budget could hold it, for a session or any caller
             return refuse(
                 403,
@@ -330,8 +341,8 @@ def create_app(
                 f"{model} has no price in this gateway's policy: every model needs one (0 for free)",
                 "unpriced",
             )
-        if sess is not None and sess.spent_usd >= sess.budget_usd:
-            return refuse(429, "rate_limit_error", "this session has used its budget", "session_over_budget")
+        if not reserve and state["budget"].spent_today(caller_name) >= caller.budget_usd_per_day:
+            return refuse(429, "rate_limit_error", f"{caller_name} has used its daily budget", "over_budget")
 
         rule = pol.rule(data_class)
         redacted: dict[str, int] = {}
@@ -357,6 +368,21 @@ def create_app(
             redacted = dict(findings.counts)
             body = scrubbed
 
+        reservation = None
+        if reserve:  # its worst case, held now, so calls in flight can't together pass a budget
+            output = 0 if not cap_field else int(body.get(cap_field) or caller.max_tokens)
+            try:
+                reservation = state["budget"].reserve(
+                    caller_name, caller.budget_usd_per_day, worst_case_usd(pol, model, body, output), sess
+                )
+            except OverBudget as over:
+                return refuse(
+                    429,
+                    "rate_limit_error",
+                    f"{over}: lower max_tokens or wait",
+                    "session_over_budget" if over.whose.startswith("this session") else "over_budget",
+                )
+
         request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
         # Nothing reaches a model unrecorded.
         try:
@@ -373,6 +399,8 @@ def create_app(
                 data_class=data_class,
             )
         except AuditUnavailable:
+            if reservation is not None:
+                state["budget"].release(reservation)
             REQUESTS.labels(pol.product, caller_name, "audit_unavailable").inc()
             return error(503, "api_error", "the audit trail is unavailable; try again shortly")
         return Admitted(
@@ -385,11 +413,20 @@ def create_app(
             request_id,
             redacted,
             session_id=sess.id if sess is not None else "",
+            reservation=reservation,
         )
 
     def charge(a: Admitted, cost: float) -> None:
-        if a.session_id:
-            state["sessions"].spend(a.session_id, cost)
+        """The call's real cost replaces what it held."""
+        if a.reservation is not None:
+            state["budget"].settle(a.reservation, cost)
+            a.reservation = None
+
+    def release(a: Admitted) -> None:
+        """A call never sent, or that failed, costs nothing: let go of what it held."""
+        if a.reservation is not None:
+            state["budget"].release(a.reservation)
+            a.reservation = None
 
     def settle(a: Admitted, res: Result, operation: str) -> Response:
         """Record usage and cost for an answered call and return the provider's answer."""
@@ -414,18 +451,21 @@ def create_app(
                 labels=a.labels,
                 operation=operation,
             )
+        else:
+            release(a)
         REQUESTS.labels(
             pol.product, a.caller_name, "ok" if res.status < 400 else f"upstream_{res.status}"
         ).inc()
         return JSONResponse(res.body, status_code=res.status, headers={"request-id": a.request_id})
 
     def unreachable(a: Admitted, exc: Exception) -> Response:
+        release(a)
         REQUESTS.labels(state["policy"].product, a.caller_name, "upstream_error").inc()
         return error(502, "api_error", f"provider unreachable: {type(exc).__name__}")
 
     @app.post("/v1/messages/count_tokens")
     async def count_tokens(request: Request) -> Response:
-        a = await admit(request, "messages")
+        a = await admit(request, "messages", reserve=False)  # free: nothing to hold
         if not isinstance(a, Admitted):
             return a
         ad = adapter(a.provider_name)
@@ -588,6 +628,7 @@ def create_app(
             return a
         p = state["policy"].providers[a.provider_name]
         if p.type != "openai":
+            release(a)
             return error(
                 400, "invalid_request_error", f"the Responses API is not available for {a.provider_name}"
             )
@@ -674,6 +715,7 @@ def create_app(
                     REQUESTS.labels(pol.product, caller_name, "ok").inc()
 
             if not isinstance(ad, (AnthropicAdapter, OpenAIAdapter)):
+                release(a)
                 return error(400, "invalid_request_error", f"streaming is not available for {provider_name}")
             return StreamingResponse(
                 relay(), media_type="text/event-stream", headers={"request-id": request_id}

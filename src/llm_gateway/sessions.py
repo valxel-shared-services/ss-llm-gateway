@@ -7,8 +7,9 @@ it may use only the models it was minted for, its labels (feature, run, agent) a
 minted and override whatever the session sends, and it serves only data of the class it was minted
 for. The caller revokes it when the session ends (DELETE /v1/sessions/{id}) and reads what it spent.
 
-Tokens are kept as SHA-256 digests, in memory, like the ledger: run one replica, or move both to
-Redis or Postgres before scaling out. A restart revokes every open session.
+Tokens are kept as SHA-256 digests. SessionStore keeps them in one process's memory (a restart
+ends every session); with GATEWAY_DATABASE_URL they're in Postgres (budget.PostgresSessionStore),
+shared by every replica.
 """
 
 from __future__ import annotations
@@ -65,6 +66,32 @@ def digest(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def mint_token(
+    clock: Callable[[], float],
+    caller: str,
+    budget_usd: float,
+    ttl_s: int,
+    models: list[str],
+    labels: dict[str, str],
+    data_class: str,
+) -> tuple[Session, str]:
+    """A new session and its token; the token itself is never stored."""
+    token = TOKEN_PREFIX + secrets.token_urlsafe(32)
+    now = clock()
+    s = Session(
+        id=str(uuid.uuid4()),
+        caller=caller,
+        digest=digest(token),
+        budget_usd=float(budget_usd),
+        expires_at=now + int(ttl_s),
+        models=list(models),
+        labels=dict(labels),
+        data_class=data_class,
+        created_at=now,
+    )
+    return s, token
+
+
 class SessionStore:
     def __init__(self, clock: Callable[[], float] = time.time) -> None:
         self.clock = clock
@@ -98,18 +125,7 @@ class SessionStore:
         data_class: str,
         max_open: int,
     ) -> tuple[Session, str]:
-        token = TOKEN_PREFIX + secrets.token_urlsafe(32)
-        s = Session(
-            id=str(uuid.uuid4()),
-            caller=caller,
-            digest=digest(token),
-            budget_usd=float(budget_usd),
-            expires_at=self.clock() + int(ttl_s),
-            models=list(models),
-            labels=dict(labels),
-            data_class=data_class,
-            created_at=self.clock(),
-        )
+        s, token = mint_token(self.clock, caller, budget_usd, ttl_s, models, labels, data_class)
         with self._lock:
             self._sweep()
             if sum(1 for o in self._by_id.values() if o.caller == caller and self._live(o)) >= max_open:
