@@ -50,21 +50,28 @@ def test_a_responses_call_goes_to_the_provider_with_its_key_and_is_metered(make_
 def test_a_streamed_call_counts_against_its_session(make_client, upstream):
     with make_client(with_tool()) as c:
         s = c.post("/v1/sessions", json=SESSION, headers={"x-api-key": TOOL_KEY}).json()
-        res = post(c, body(stream=True), key=s["token"])
+        res = post(c, body(stream=True, max_output_tokens=1000), key=s["token"])
         assert res.status_code == 200 and b"response.completed" in res.content
         seen = c.get(f"/v1/sessions/{s['id']}", headers={"x-api-key": TOOL_KEY}).json()
         assert seen["calls"] == 1 and seen["spent_usd"] > 0
 
 
-def test_a_session_stops_once_its_budget_is_spent(make_client, upstream):
-    """The live dollar cap: the gateway refuses a session's next call once it has spent its budget."""
+def test_a_session_is_held_to_its_budget_before_anything_is_sent(make_client, upstream):
+    """A hard cap: a call that could take the session past its budget is refused unsent, and calls
+    that fit are let through until what they cost leaves no room for the next."""
     with make_client(with_tool()) as c:
         s = c.post(
-            "/v1/sessions", json={**SESSION, "budget_usd": 0.001}, headers={"x-api-key": TOOL_KEY}
+            "/v1/sessions", json={**SESSION, "budget_usd": 0.02}, headers={"x-api-key": TOOL_KEY}
         ).json()
-        assert post(c, body(), key=s["token"]).status_code == 200  # about $0.002: over its $0.001
-        over = post(c, body(), key=s["token"])
-        assert over.status_code == 429 and len(upstream.requests) == 1
+        big = post(c, body(max_output_tokens=4000), key=s["token"])
+        assert big.status_code == 429 and "this session's budget" in big.json()["error"]["message"]
+        assert not upstream.requests
+        sent = 0
+        while post(c, body(max_output_tokens=1000), key=s["token"]).status_code == 200:
+            sent += 1
+        seen = c.get(f"/v1/sessions/{s['id']}", headers={"x-api-key": TOOL_KEY}).json()
+        assert sent >= 1 and seen["calls"] == sent == len(upstream.requests)
+        assert seen["spent_usd"] <= 0.02
 
 
 def test_secrets_in_the_input_are_redacted_before_they_leave(make_client, upstream):

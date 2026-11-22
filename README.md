@@ -17,7 +17,7 @@ client = anthropic.Anthropic(base_url=os.environ["LLM_GATEWAY_URL"], api_key=os.
 | Approved providers only | A model is served only by a provider listed in the policy that does the operation (messages, embeddings, rerank); PHI products only by providers under a BAA or self-hosted models (`require_baa`) |
 | Who may call what | Each agent or knowledge component has its own key (only its SHA-256 is in the policy), its own model list, a `max_tokens` cap and a `max_inputs` cap (texts per embeddings or rerank call) |
 | Data that must not reach a model | Payments: card numbers (Luhn-checked) block the request. General: secrets (every credential the platform issues, among them session tokens, GitHub installation tokens and AWS temporary keys; `tests/test_redaction_corpus.py`), card numbers and SSNs are redacted. PHI: provider-level control instead, since the BAA covers the content |
-| Spend | A daily budget per agent; the request is refused with `rate_limit_error` once it is used |
+| Spend | A daily budget per agent, held as a hard cap: each call reserves its worst-case cost (its whole request as input, its whole output allowance) before it's sent and is refused with `rate_limit_error` if that could pass the budget; the reservation becomes the real cost when it's answered (`budget.py`) |
 | Session tokens | A caller with a `sessions` grant mints a short-lived token per agent session (below) so the session never holds a provider key or the caller's own key. The token expires, has its own budget within the caller's, may use only the models it was minted for, carries fixed labels, and is revoked when the session ends |
 | Accountability | One JSON log line per call (product, agent, model, tokens, cache reads and writes, cost, request id, any `x-valxel-*` labels such as component or feature id; `x-vrixel-*` still works) and Prometheus metrics |
 | Audit | Every request is audited before it reaches a provider (CloudEvents `valxel.audit.v1` on the product's Kafka audit topic): caller, model, provider, kinds of data redacted, and every refusal with its reason. Never content. If the record can't be published the request is refused (`GATEWAY_AUDIT_REQUIRED`, default true) |
@@ -62,7 +62,10 @@ Deploy it in each product's OpenChoreo project with:
 - `GATEWAY_POLICY` pointing at the product's policy (a config map); `data_class` must match the
   product's data class in the platform registry.
 - Provider keys from secret references (`ANTHROPIC_API_KEY`, ...). Never in the policy or the repo.
-- One replica, or move the budget ledger to Redis or Postgres first (it is in memory).
+- `GATEWAY_DATABASE_URL` (Postgres) for two or more replicas: spend, reservations and session
+  tokens are kept there, so every replica holds the same budgets and a restart loses neither spend
+  nor sessions. Without it they're in one process's memory: run one replica. `/readyz` says which
+  (`"state": "postgres"` or `"memory"`). The gateway creates its tables at start.
 - No ingress from outside the project: only the product's agents call it.
 
 ## Session tokens
@@ -83,10 +86,10 @@ callers:
 The session points its Anthropic client at the gateway (`ANTHROPIC_BASE_URL`) with the token as
 its key. A gateway serves sessions of its own data class, or general ones: a PHI session can't be
 minted on a gateway set up for general data. A session's spend counts towards its own budget and
-its caller's daily one; a streamed call that crosses the session's budget finishes, and the next
-is refused. Every caller, a session or not, may use only models the policy prices (a self-hosted one
-at 0, say), so budgets always hold; a caller's model glob that no price could cover fails at load: that is the live dollar cap for agents with none of their own, such as Codex. Tokens live in memory, like the ledger: run one replica, and a restart ends every open
-session. Minting and revoking are audited (`llm.session.minted`, `llm.session.revoked`).
+its caller's daily one, and each call reserves its worst case against both before it's sent: a call
+that could cross either is refused unsent (lower `max_tokens` to fit what's left). Every caller, a session or not, may use only models the policy prices (a self-hosted one
+at 0, say), so budgets always hold; a caller's model glob that no price could cover fails at load: that is the live dollar cap for agents with none of their own, such as Codex. Tokens are kept with the spend: in Postgres with `GATEWAY_DATABASE_URL`, shared by every
+replica; otherwise in memory, where a restart ends every open session. Minting and revoking are audited (`llm.session.minted`, `llm.session.revoked`).
 
 ## One gateway for several data classes
 
