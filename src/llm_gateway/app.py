@@ -323,11 +323,11 @@ def create_app(
                 return refuse(400, "invalid_request_error", problem, "")
         if ledger.spent_today(caller_name) >= caller.budget_usd_per_day:
             return refuse(429, "rate_limit_error", f"{caller_name} has used its daily budget", "over_budget")
-        if sess is not None and pol.price(model) is None:  # unpriced, a session's budget couldn't hold it
+        if pol.price(model) is None:  # unpriced: no budget could hold it, for a session or any caller
             return refuse(
                 403,
                 "permission_error",
-                f"{model} has no price in this gateway's policy: sessions use priced models",
+                f"{model} has no price in this gateway's policy: every model needs one (0 for free)",
                 "unpriced",
             )
         if sess is not None and sess.spent_usd >= sess.budget_usd:

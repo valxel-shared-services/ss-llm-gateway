@@ -16,7 +16,7 @@ client = anthropic.Anthropic(base_url=os.environ["LLM_GATEWAY_URL"], api_key=os.
 | --- | --- |
 | Approved providers only | A model is served only by a provider listed in the policy that does the operation (messages, embeddings, rerank); PHI products only by providers under a BAA or self-hosted models (`require_baa`) |
 | Who may call what | Each agent or knowledge component has its own key (only its SHA-256 is in the policy), its own model list, a `max_tokens` cap and a `max_inputs` cap (texts per embeddings or rerank call) |
-| Data that must not reach a model | Payments: card numbers (Luhn-checked) block the request. General: secrets, card numbers and SSNs are redacted. PHI: provider-level control instead, since the BAA covers the content |
+| Data that must not reach a model | Payments: card numbers (Luhn-checked) block the request. General: secrets (every credential the platform issues, among them session tokens, GitHub installation tokens and AWS temporary keys; `tests/test_redaction_corpus.py`), card numbers and SSNs are redacted. PHI: provider-level control instead, since the BAA covers the content |
 | Spend | A daily budget per agent; the request is refused with `rate_limit_error` once it is used |
 | Session tokens | A caller with a `sessions` grant mints a short-lived token per agent session (below) so the session never holds a provider key or the caller's own key. The token expires, has its own budget within the caller's, may use only the models it was minted for, carries fixed labels, and is revoked when the session ends |
 | Accountability | One JSON log line per call (product, agent, model, tokens, cache reads and writes, cost, request id, any `x-valxel-*` labels such as component or feature id; `x-vrixel-*` still works) and Prometheus metrics |
@@ -84,8 +84,8 @@ The session points its Anthropic client at the gateway (`ANTHROPIC_BASE_URL`) wi
 its key. A gateway serves sessions of its own data class, or general ones: a PHI session can't be
 minted on a gateway set up for general data. A session's spend counts towards its own budget and
 its caller's daily one; a streamed call that crosses the session's budget finishes, and the next
-is refused. A session may use only models the policy prices (a self-hosted one at 0, say), so its budget
-always holds: that is the live dollar cap for agents with none of their own, such as Codex. Tokens live in memory, like the ledger: run one replica, and a restart ends every open
+is refused. Every caller, a session or not, may use only models the policy prices (a self-hosted one
+at 0, say), so budgets always hold; a caller's model glob that no price could cover fails at load: that is the live dollar cap for agents with none of their own, such as Codex. Tokens live in memory, like the ledger: run one replica, and a restart ends every open
 session. Minting and revoking are audited (`llm.session.minted`, `llm.session.revoked`).
 
 ## One gateway for several data classes

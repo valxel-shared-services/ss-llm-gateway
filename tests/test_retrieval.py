@@ -71,6 +71,7 @@ def policy(data_class="phi", budget=1.0, **caller):
                 "bge-*": {"input": 0.0},
                 "text-embedding-*": {"input": 0.02},
                 "rerank-*": {"input": 0.05, "per_request": 0.002},
+                "claude-*": {"input": 3.0, "output": 15.0},
             },
         }
     )

@@ -7,6 +7,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import os
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -122,6 +123,29 @@ class Policy(BaseModel):
             if missing:
                 raise ValueError(
                     f"caller {name} may declare {', '.join(missing)} with no rule for it in data_classes"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _allowed_models_are_priced(self) -> Policy:
+        """A caller's model glob that no price could ever cover is a mistake: gpt-* with only
+        claude-* priced. Caught at load. Globs that are partly priced (claude-* beside
+        claude-sonnet-*) load, and the gateway refuses each unpriced model when it is asked for:
+        that refusal, for every caller, is what keeps an unpriced model out of the budget."""
+
+        def literal(glob: str) -> str:
+            return re.split(r"[*?\[]", glob, maxsplit=1)[0]
+
+        def overlaps(a: str, b: str) -> bool:
+            la, lb = literal(a), literal(b)
+            return la.startswith(lb) or lb.startswith(la)
+
+        for name, c in self.callers.items():
+            unpriced = [m for m in c.models if not any(overlaps(m, p) for p in self.pricing)]
+            if unpriced:
+                raise ValueError(
+                    f"caller {name} may use {', '.join(unpriced)} with no price in pricing: "
+                    "price each (0 for a free model), or narrow the caller's models to priced ones"
                 )
         return self
 
