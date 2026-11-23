@@ -27,7 +27,7 @@ llm-gateway = "llm_gateway.app:main"
 dev = [
     "pytest>=9.2",
     "pytest-cov>=7.1",
-    "ruff>=0.17",
+    "ruff>=0.17.6",
     "mypy>=2.4",
     "types-pyyaml",
     "jsonschema>=4.26.0",
