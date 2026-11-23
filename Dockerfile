@@ -10,7 +10,7 @@ COPY README.md ./
 RUN uv sync --locked --no-dev --no-editable
 
 # The same Python as the build stage: the virtualenv is bound to the interpreter that made it.
-FROM python:3.13-slim-bookworm
+FROM python:3.15-slim-bookworm
 # No pip, setuptools or ensurepip at run time: nothing installs here, and their vendored packages
 # (urllib3, msgpack) only add vulnerabilities.
 RUN python -m pip uninstall -y pip setuptools wheel 2>/dev/null; rm -rf /usr/local/lib/python3.13/ensurepip \
