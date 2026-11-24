@@ -20,6 +20,14 @@ class AnthropicAdapter:
         self.provider = provider
         self.client = client
 
+    def _target(self, op: str, body: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """The URL and body for one call (op: messages, count_tokens). Vertex AI overrides it."""
+        path = "/v1/messages/count_tokens" if op == "count_tokens" else "/v1/messages"
+        return f"{self.provider.base_url}{path}", body
+
+    async def _ready(self) -> None:
+        """Before a call: nothing for a key; Vertex AI refreshes its access token here."""
+
     def _headers(self, incoming: dict[str, str]) -> dict[str, str]:
         out = {
             "x-api-key": self.provider.api_key(),
@@ -31,16 +39,18 @@ class AnthropicAdapter:
         return out
 
     async def create(self, body: dict[str, Any], headers: dict[str, str]) -> Result:
-        res = await self.client.post(
-            f"{self.provider.base_url}/v1/messages", json=body, headers=self._headers(headers), timeout=600
-        )
+        await self._ready()
+        url, out = self._target("messages", body)
+        res = await self.client.post(url, json=out, headers=self._headers(headers), timeout=600)
         data = res.json()
         return Result(status=res.status_code, body=data, usage=data.get("usage") or {})
 
     async def count_tokens(self, body: dict[str, Any], headers: dict[str, str]) -> Result:
+        await self._ready()
+        url, out = self._target("count_tokens", body)
         res = await self.client.post(
-            f"{self.provider.base_url}/v1/messages/count_tokens",
-            json=body,
+            url,
+            json=out,
             headers=self._headers(headers),
             timeout=60,
         )
@@ -49,10 +59,12 @@ class AnthropicAdapter:
     async def stream(
         self, body: dict[str, Any], headers: dict[str, str], usage: dict[str, Any]
     ) -> AsyncIterator[bytes]:
+        await self._ready()
+        url, out = self._target("stream", body)
         async with self.client.stream(
             "POST",
-            f"{self.provider.base_url}/v1/messages",
-            json=body,
+            url,
+            json=out,
             headers=self._headers(headers),
             timeout=600,
         ) as res:

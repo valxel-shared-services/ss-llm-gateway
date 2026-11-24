@@ -22,13 +22,14 @@ Operation = Literal["messages", "embeddings", "rerank", "responses"]
 # OpenAI-compatible servers (vLLM, TEI, Cohere, Voyage) serve it.
 DEFAULT_OPERATIONS: dict[str, list[Operation]] = {
     "anthropic": ["messages"],
+    "vertex": ["messages"],
     "openai": ["messages", "embeddings", "responses"],
 }
 
 
 class Provider(BaseModel):
-    type: Literal["anthropic", "openai"]
-    base_url: str
+    type: Literal["anthropic", "openai", "vertex"]
+    base_url: str = ""  # vertex: https://<region>-aiplatform.googleapis.com unless set
     api_key_env: str = ""  # empty for a self-hosted model that takes no key
     baa: bool = False  # a business associate agreement (or DPA) covers this provider
     self_hosted: bool = False  # runs inside the product's own network: data never leaves it
@@ -36,11 +37,30 @@ class Provider(BaseModel):
     operations: list[Operation] | None = None  # defaults by type (DEFAULT_OPERATIONS)
     embeddings_path: str = "/v1/embeddings"
     rerank_path: str = "/v1/rerank"
+    # vertex (Claude on Vertex AI, providers/vertex.py): the project and region (or "global") it runs
+    # in, and the Vertex AI name of each model callers name, where it carries a version.
+    project: str = ""
+    region: str = ""
+    model_versions: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _anthropic_only_messages(self) -> Provider:
-        if self.type == "anthropic" and set(self.operations or []) - {"messages"}:
-            raise ValueError("an anthropic provider serves messages only; embeddings and rerank need another")
+        if self.type in ("anthropic", "vertex") and set(self.operations or []) - {"messages"}:
+            raise ValueError(
+                f"a {self.type} provider serves messages only; embeddings and rerank need another"
+            )
+        if self.type == "vertex":
+            if not (self.project and self.region):
+                raise ValueError("a vertex provider needs its project and region")
+            if self.api_key_env:
+                raise ValueError("a vertex provider takes no key: it uses the pod's own Google credentials")
+            if not self.base_url:
+                host = "aiplatform.googleapis.com"
+                self.base_url = (
+                    f"https://{host}" if self.region == "global" else f"https://{self.region}-{host}"
+                )
+        elif not self.base_url:
+            raise ValueError(f"a {self.type} provider needs its base_url")
         return self
 
     def api_key(self) -> str:

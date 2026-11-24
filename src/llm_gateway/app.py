@@ -51,6 +51,7 @@ from .policy import Caller, Operation, Policy, load_policy
 from .providers import Adapter, Result, retrieval
 from .providers.anthropic import AnthropicAdapter
 from .providers.openai import OpenAIAdapter, ResponsesAdapter
+from .providers.vertex import VertexAdapter
 from .redaction import Findings, scrub_fields, scrub_request, scrub_responses
 from .sessions import TOKEN_PREFIX, Session, SessionRefused, SessionStore
 
@@ -213,7 +214,7 @@ def create_app(
 
     def adapter(provider_name: str) -> Adapter:
         p = state["policy"].providers[provider_name]
-        cls = AnthropicAdapter if p.type == "anthropic" else OpenAIAdapter
+        cls = {"anthropic": AnthropicAdapter, "vertex": VertexAdapter}.get(p.type, OpenAIAdapter)
         return cls(p, state["client"])
 
     @app.get("/healthz")

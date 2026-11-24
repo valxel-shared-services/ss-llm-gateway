@@ -9,6 +9,13 @@ providers:
     api_key_env: ANTHROPIC_API_KEY
     baa: true                # a BAA covers this account; required for phi
     models: ["claude-*"]
+  # On Google Cloud: Claude on Vertex AI in the customer's project, with the pod's own credentials.
+  # claude-vertex:
+  #   type: vertex
+  #   project: acme-ai
+  #   region: us-east5
+  #   baa: true
+  #   models: ["claude-*"]
   # Embeddings and reranking for knowledge components. For PHI: a self-hosted model (data stays
   # in the product) or a provider under a BAA. Decided at G4 and written in the HLD.
   embeddings:
