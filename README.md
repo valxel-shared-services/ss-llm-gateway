@@ -42,6 +42,24 @@ providers:
       claude-sonnet-5-5: claude-sonnet-5-5@20260601
 ```
 
+## Claude in Microsoft Foundry
+
+On Azure, Claude can run in the customer's own Foundry resource (`type: foundry`,
+providers/foundry.py). Foundry serves the Messages API itself, so requests pass through unchanged;
+the model becomes the deployment's name, and the gateway signs in with the pod's own Entra ID
+identity (AKS Workload Identity, role Azure AI User on the resource), so no key is stored:
+
+```yaml
+providers:
+  claude:
+    type: foundry
+    base_url: https://acme-ai.services.ai.azure.com/anthropic
+    baa: true                 # covered by the customer's Microsoft BAA, for phi
+    models: ["claude-*"]
+    model_versions:           # the deployment each model name is served by
+      claude-sonnet-5-5: acme-claude-sonnet
+```
+
 ## Embeddings and reranking
 
 Knowledge (RAG) components embed and rerank through the gateway under the same rules as
