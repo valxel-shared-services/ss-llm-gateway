@@ -23,13 +23,15 @@ Operation = Literal["messages", "embeddings", "rerank", "responses"]
 DEFAULT_OPERATIONS: dict[str, list[Operation]] = {
     "anthropic": ["messages"],
     "vertex": ["messages"],
+    "foundry": ["messages"],
     "openai": ["messages", "embeddings", "responses"],
 }
 
 
 class Provider(BaseModel):
-    type: Literal["anthropic", "openai", "vertex"]
+    type: Literal["anthropic", "openai", "vertex", "foundry"]
     base_url: str = ""  # vertex: https://<region>-aiplatform.googleapis.com unless set
+    # foundry (Claude in Microsoft Foundry, providers/foundry.py): https://<resource>.services.ai.azure.com/anthropic
     api_key_env: str = ""  # empty for a self-hosted model that takes no key
     baa: bool = False  # a business associate agreement (or DPA) covers this provider
     self_hosted: bool = False  # runs inside the product's own network: data never leaves it
@@ -38,14 +40,15 @@ class Provider(BaseModel):
     embeddings_path: str = "/v1/embeddings"
     rerank_path: str = "/v1/rerank"
     # vertex (Claude on Vertex AI, providers/vertex.py): the project and region (or "global") it runs
-    # in, and the Vertex AI name of each model callers name, where it carries a version.
+    # in, and the Vertex AI name of each model callers name, where it carries a version. foundry:
+    # model_versions maps the names callers use to the Foundry deployments' names.
     project: str = ""
     region: str = ""
     model_versions: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _anthropic_only_messages(self) -> Provider:
-        if self.type in ("anthropic", "vertex") and set(self.operations or []) - {"messages"}:
+        if self.type in ("anthropic", "vertex", "foundry") and set(self.operations or []) - {"messages"}:
             raise ValueError(
                 f"a {self.type} provider serves messages only; embeddings and rerank need another"
             )
@@ -59,6 +62,19 @@ class Provider(BaseModel):
                 self.base_url = (
                     f"https://{host}" if self.region == "global" else f"https://{self.region}-{host}"
                 )
+        elif self.type == "foundry":
+            if self.api_key_env:
+                raise ValueError("a foundry provider takes no key: it uses the pod's own Entra ID identity")
+            parts = self.base_url.rstrip("/").removeprefix("https://").split("/", 1)
+            if not (
+                self.base_url.startswith("https://")
+                and parts[0].endswith(".services.ai.azure.com")
+                and parts[1:] == ["anthropic"]
+            ):
+                raise ValueError(
+                    "a foundry provider's base_url is https://<resource>.services.ai.azure.com/anthropic"
+                )
+            self.base_url = self.base_url.rstrip("/")
         elif not self.base_url:
             raise ValueError(f"a {self.type} provider needs its base_url")
         return self

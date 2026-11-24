@@ -50,6 +50,7 @@ from .ledger import REDACTIONS, REQUESTS, Ledger
 from .policy import Caller, Operation, Policy, load_policy
 from .providers import Adapter, Result, retrieval
 from .providers.anthropic import AnthropicAdapter
+from .providers.foundry import FoundryAdapter
 from .providers.openai import OpenAIAdapter, ResponsesAdapter
 from .providers.vertex import VertexAdapter
 from .redaction import Findings, scrub_fields, scrub_request, scrub_responses
@@ -214,7 +215,9 @@ def create_app(
 
     def adapter(provider_name: str) -> Adapter:
         p = state["policy"].providers[provider_name]
-        cls = {"anthropic": AnthropicAdapter, "vertex": VertexAdapter}.get(p.type, OpenAIAdapter)
+        cls = {"anthropic": AnthropicAdapter, "vertex": VertexAdapter, "foundry": FoundryAdapter}.get(
+            p.type, OpenAIAdapter
+        )
         return cls(p, state["client"])
 
     @app.get("/healthz")
